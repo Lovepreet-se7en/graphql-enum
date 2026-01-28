@@ -76,11 +76,8 @@ func (g *Generator) generateOne(path schema.GraphQLPath, index int) GeneratedQue
 			var argParts []string
 			for _, arg := range seg.Args {
 				varName := fmt.Sprintf("%s_%s", seg.Name, arg.Name)
-				if arg.Required {
-					argParts = append(argParts, fmt.Sprintf("%s: $%s", arg.Name, varName))
-				} else {
-					argParts = append(argParts, fmt.Sprintf("%s: null", arg.Name))
-				}
+				// Always include arguments with variables to make them configurable
+				argParts = append(argParts, fmt.Sprintf("%s: $%s", arg.Name, varName))
 			}
 			queryBuilder.WriteString("(" + strings.Join(argParts, ", ") + ")")
 		}
@@ -118,22 +115,99 @@ func (g *Generator) generateOne(path schema.GraphQLPath, index int) GeneratedQue
 
 func (g *Generator) addLeafFields(b *strings.Builder, indent, typeName string) {
 	b.WriteString(indent + "__typename")
-	
+
 	typ := g.schema.GetType(typeName)
 	if typ == nil {
 		return
 	}
-	
+
 	count := 0
 	for _, f := range typ.Fields {
-		if len(f.Args) == 0 && f.Type != typeName { // Avoid recursion
+		if f.Type != typeName { // Avoid recursion
 			b.WriteString("\n" + indent + f.Name)
+
+			// Check if this field is a connection type that needs subselections
+			if g.isConnectionType(f.Type) {
+				b.WriteString(" {")
+				// Add basic fields for connection types
+				b.WriteString("\n" + indent + "  __typename")
+
+				// If it's a connection, try to get the node type and add some fields
+				nodeType := g.getNodeType(f.Type)
+				if nodeType != "" {
+					nodeTyp := g.schema.GetType(nodeType)
+					if nodeTyp != nil {
+						// Add a few basic fields from the node type
+						fieldCount := 0
+						for _, nodeField := range nodeTyp.Fields {
+							if len(nodeField.Args) == 0 && nodeField.Name != "__typename" {
+								b.WriteString("\n" + indent + "  " + nodeField.Name)
+								fieldCount++
+								if fieldCount >= 2 { // Limit to 2 fields to avoid overly complex queries
+									break
+								}
+							}
+						}
+					}
+				}
+				b.WriteString("\n" + indent + "}")
+			}
+
 			count++
 			if count >= 3 {
 				break
 			}
 		}
 	}
+}
+
+// isConnectionType checks if a type is a connection type (ends with Connection)
+func (g *Generator) isConnectionType(typeName string) bool {
+	// Remove non-null (!) and list ([...]) markers to check the base type
+	baseType := g.getBaseTypeName(typeName)
+	return strings.HasSuffix(baseType, "Connection")
+}
+
+// getNodeType attempts to extract the node type from a connection type
+func (g *Generator) getNodeType(connectionType string) string {
+	// Remove non-null (!) and list ([...]) markers
+	baseType := g.getBaseTypeName(connectionType)
+
+	// If it's a Connection type, try to find the corresponding node type
+	// Usually connections have an 'edges' field that leads to a node
+	connType := g.schema.GetType(baseType)
+	if connType != nil {
+		// Look for edges field which typically contains the nodes
+		for _, field := range connType.Fields {
+			if field.Name == "edges" {
+				edgeType := g.getBaseTypeName(field.Type)
+				edgeTyp := g.schema.GetType(edgeType)
+				if edgeTyp != nil {
+					// Look for 'node' field in the edge type
+					for _, edgeField := range edgeTyp.Fields {
+						if edgeField.Name == "node" {
+							return g.getBaseTypeName(edgeField.Type)
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// getBaseTypeName removes GraphQL type modifiers like ! and []
+func (g *Generator) getBaseTypeName(typeName string) string {
+	// Remove non-null marker
+	result := strings.TrimSuffix(typeName, "!")
+
+	// Remove list markers [Type] -> Type
+	if strings.HasPrefix(result, "[") && strings.HasSuffix(result, "]") {
+		// Extract content between brackets, removing potential non-null markers
+		result = strings.Trim(result, "[]!")
+	}
+
+	return result
 }
 
 func (g *Generator) formatPath(path schema.GraphQLPath) string {
