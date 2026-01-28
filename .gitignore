@@ -1,0 +1,24 @@
+# Binaries
+graphql-enum
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test output
+*.out
+*.test
+
+# Go specific
+vendor/
+dist/
+
+# IDE
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Schema files (for testing)
+*.json
+!example-schema.json
