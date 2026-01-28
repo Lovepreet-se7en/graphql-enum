@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"runtime"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,7 +30,7 @@ var (
 	generate    = flag.Bool("generate", false, "Generate executable queries")
 	outputDir   = flag.String("output", "./queries", "Output directory for generated queries")
 	endpoint    = flag.String("endpoint", "", "GraphQL endpoint for curl generation")
-	parallel    = flag.Int("parallel", 0, "Number of parallel workers (0=sequential)")
+	parallel    = flag.Int("parallel", runtime.NumCPU(), "Number of parallel workers (0=sequential, default=num CPU cores)")
 	jsonExport  = flag.String("json", "", "Export results to JSON file")
 	listTypes   = flag.Bool("list-types", false, "List all types in the schema")
 )
