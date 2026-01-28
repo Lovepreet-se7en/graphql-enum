@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/lovepreet-se7en/graphql-enum/internal/generator"
@@ -30,6 +31,7 @@ var (
 	endpoint    = flag.String("endpoint", "", "GraphQL endpoint for curl generation")
 	parallel    = flag.Int("parallel", 0, "Number of parallel workers (0=sequential)")
 	jsonExport  = flag.String("json", "", "Export results to JSON file")
+	listTypes   = flag.Bool("list-types", false, "List all types in the schema")
 )
 
 func main() {
@@ -42,6 +44,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  graphql-enum -schema schema.json -type User\n")
 		fmt.Fprintf(os.Stderr, "  graphql-enum -schema schema.json -type User -i -parallel 8\n")
 		fmt.Fprintf(os.Stderr, "  graphql-enum -schema schema.json -type Repository -generate -endpoint https://api.example.com/graphql\n")
+		fmt.Fprintf(os.Stderr, "  graphql-enum -schema schema.json -list-types\n")
 	}
 	flag.Parse()
 
@@ -49,8 +52,24 @@ func main() {
 		color.NoColor = true
 	}
 
+	// Check if we're just listing types
+	if *listTypes {
+		if *schemaFile == "" {
+			flag.Usage()
+			os.Exit(1)
+		}
+		listAllTypes()
+		return
+	}
+
 	// Validation
-	if *schemaFile == "" || *targetType == "" {
+	if *schemaFile == "" {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	// targetType is only required if not listing types
+	if !*listTypes && *targetType == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -98,7 +117,7 @@ func main() {
 
 	// Choose traversal strategy
 	var paths []schema.GraphQLPath
-	
+
 	if *parallel > 0 {
 		if *verbose {
 			color.Cyan("Using parallel traversal with %d workers...", *parallel)
@@ -158,7 +177,7 @@ func generateQueries(paths []schema.GraphQLPath, scm *schema.Schema, target stri
 		content := "#!/bin/bash\n\n# Auto-generated GraphQL test commands\n# Endpoint: " + *endpoint + "\n\n"
 		content += strings.Join(cmds, "\n\n")
 		content += "\n"
-		
+
 		if err := os.WriteFile(curlFile, []byte(content), 0755); err != nil {
 			log.Printf("Warning: Failed to save curl commands: %v", err)
 		} else {
@@ -178,8 +197,8 @@ func exportJSON(paths []schema.GraphQLPath, filename string) {
 	exports := make([]pathExport, len(paths))
 	for i, p := range paths {
 		segments := make([]string, len(p.Segments))
-		for j, s := range p.Segments {
-			segments[j] = s.Name
+		for j, seg := range p.Segments {
+			segments[j] = seg.Name
 		}
 		exports[i] = pathExport{
 			Path:     formatPath(p),
@@ -239,4 +258,31 @@ func formatPath(path schema.GraphQLPath) string {
 		}
 	}
 	return strings.Join(parts, " → ")
+}
+
+func listAllTypes() {
+	scm, err := schema.Load(*schemaFile)
+	if err != nil {
+		log.Fatalf("Failed to load schema: %v", err)
+	}
+
+	if *verbose {
+		color.Cyan("Loading schema from %s...", *schemaFile)
+		color.Green("Schema loaded: %d types found", len(scm.Types))
+	}
+
+	// Get all type names and sort them
+	var typeNames []string
+	for name := range scm.Types {
+		typeNames = append(typeNames, name)
+	}
+
+	// Sort type names alphabetically
+	sort.Strings(typeNames)
+
+	fmt.Printf("Found %d types in schema:\n\n", len(typeNames))
+	for i, typeName := range typeNames {
+		t := scm.Types[typeName]
+		fmt.Printf("%3d. %-30s (%s)\n", i+1, typeName, t.Kind)
+	}
 }
