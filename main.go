@@ -10,45 +10,34 @@ import (
 	"github.com/fatih/color"
 )
 
-// SchemaFormat represents the two supported input formats
-type SchemaFormat int
-
-const (
-	FormatIntrospection SchemaFormat = iota
-	FormatGitHub
-)
-
-// IntrospectionFormat represents standard GraphQL introspection JSON
+// Introspection Schema Types
 type IntrospectionFormat struct {
 	Data struct {
 		Schema struct {
-			QueryType        *NamedTypeRef `json:"queryType"`
-			MutationType     *NamedTypeRef `json:"mutationType"`
-			SubscriptionType *NamedTypeRef `json:"subscriptionType"`
-			Types            []IntrospectionType `json:"types"`
+			QueryType        *NamedType `json:"queryType"`
+			MutationType     *NamedType `json:"mutationType"`
+			SubscriptionType *NamedType `json:"subscriptionType"`
+			Types            []FullType `json:"types"`
 		} `json:"__schema"`
 	} `json:"data"`
 }
 
-type NamedTypeRef struct {
+type NamedType struct {
 	Name string `json:"name"`
-	Kind string `json:"kind"`
 }
 
-type IntrospectionType struct {
-	Kind          string            `json:"kind"`
-	Name          string            `json:"name"`
-	Description   string            `json:"description"`
+type FullType struct {
+	Kind          string             `json:"kind"`
+	Name          string             `json:"name"`
 	Fields        []IntrospectionField `json:"fields"`
-	Interfaces    []NamedTypeRef    `json:"interfaces"`
-	PossibleTypes []NamedTypeRef    `json:"possibleTypes"`
+	Interfaces    []NamedType        `json:"interfaces"`
+	PossibleTypes []NamedType        `json:"possibleTypes"`
 }
 
 type IntrospectionField struct {
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Type        TypeRef            `json:"type"`
-	Args        []IntrospectionArg `json:"args"`
+	Name string             `json:"name"`
+	Type TypeRef            `json:"type"`
+	Args []IntrospectionArg `json:"args"`
 }
 
 type IntrospectionArg struct {
@@ -62,7 +51,26 @@ type TypeRef struct {
 	OfType *TypeRef `json:"ofType"`
 }
 
-// GitHubFormat represents GitHub's custom schema documentation format
+// GitHub documentation format
+type GitHubType string
+
+func (gt *GitHubType) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*gt = GitHubType(s)
+		return nil
+	}
+
+	var obj struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &obj); err == nil {
+		*gt = GitHubType(obj.Name)
+		return nil
+	}
+	return nil
+}
+
 type GitHubFormat struct {
 	Queries      []GitHubFieldDef `json:"queries"`
 	Mutations    []GitHubFieldDef `json:"mutations"`
@@ -76,7 +84,7 @@ type GitHubFormat struct {
 
 type GitHubFieldDef struct {
 	Name         string            `json:"name"`
-	Type         string            `json:"type"`
+	Type         GitHubType        `json:"type"`
 	Kind         string            `json:"kind"`
 	ID           string            `json:"id"`
 	Href         string            `json:"href"`
@@ -87,22 +95,22 @@ type GitHubFieldDef struct {
 }
 
 type GitHubArg struct {
-	Name         string `json:"name"`
-	Type         string `json:"type"`
-	ID           string `json:"id"`
-	Kind         string `json:"kind"`
-	Href         string `json:"href"`
-	Description  string `json:"description"`
-	DefaultValue string `json:"defaultValue,omitempty"`
+	Name         string      `json:"name"`
+	Type         GitHubType  `json:"type"`
+	ID           string      `json:"id"`
+	Kind         string      `json:"kind"`
+	Href         string      `json:"href"`
+	Description  string      `json:"description"`
+	DefaultValue interface{} `json:"defaultValue,omitempty"`
 }
 
 type GitHubReturnField struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	ID          string `json:"id"`
-	Kind        string `json:"kind"`
-	Description string `json:"description"`
-	IsDeprecated bool  `json:"isDeprecated,omitempty"`
+	Name        string     `json:"name"`
+	Type        GitHubType `json:"type"`
+	ID          string     `json:"id"`
+	Kind        string     `json:"kind"`
+	Description string     `json:"description"`
+	IsDeprecated bool      `json:"isDeprecated,omitempty"`
 }
 
 type GitHubTypeDef struct {
@@ -115,23 +123,41 @@ type GitHubTypeDef struct {
 	Implements  []GitHubImplement `json:"implements"`
 }
 
-// GitHubField is used inside Objects/Interfaces and uses "arguments" (not "args")
 type GitHubField struct {
 	Name              string      `json:"name"`
 	Description       string      `json:"description"`
-	Type              string      `json:"type"`
+	Type              GitHubType  `json:"type"`
 	ID                string      `json:"id"`
 	Kind              string      `json:"kind"`
 	Href              string      `json:"href"`
-	Arguments         []GitHubArg `json:"arguments"` // Note: different from top-level "args"
+	Arguments         []GitHubArg `json:"arguments"`
 	IsDeprecated      bool        `json:"isDeprecated,omitempty"`
 	DeprecationReason string      `json:"deprecationReason,omitempty"`
 }
 
 type GitHubImplement struct {
-	Name string `json:"name"`
-	ID   string `json:"id"`
-	Href string `json:"href"`
+	Name GitHubType `json:"name"`
+	ID   string     `json:"id"`
+	Href string     `json:"href"`
+}
+
+func (gi *GitHubImplement) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		gi.Name = GitHubType(name)
+		return nil
+	}
+	type Alias GitHubImplement
+	var aux struct {
+		Name GitHubType `json:"name"`
+		*Alias
+	}
+	aux.Alias = (*Alias)(gi)
+	if err := json.Unmarshal(data, &aux); err == nil {
+		gi.Name = aux.Name
+		return nil
+	}
+	return nil
 }
 
 type GitHubUnion struct {
@@ -140,23 +166,39 @@ type GitHubUnion struct {
 	ID            string   `json:"id"`
 	Href          string   `json:"href"`
 	Description   string   `json:"description"`
-	PossibleTypes []string `json:"possibleTypes"`
+	PossibleTypes []string `json:"-"`
+}
+
+func (u *GitHubUnion) UnmarshalJSON(data []byte) error {
+	type Alias GitHubUnion
+	aux := struct {
+		PossibleTypes []interface{} `json:"possibleTypes"`
+		*Alias
+	}{
+		Alias: (*Alias)(u),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	for _, pt := range aux.PossibleTypes {
+		switch v := pt.(type) {
+		case string:
+			u.PossibleTypes = append(u.PossibleTypes, v)
+		case map[string]interface{}:
+			if name, ok := v["name"].(string); ok {
+				u.PossibleTypes = append(u.PossibleTypes, name)
+			}
+		}
+	}
+	return nil
 }
 
 type GitHubEnum struct {
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	ID          string `json:"id"`
-	Href        string `json:"href"`
-	Description string `json:"description"`
+	Name string `json:"name"`
 }
 
 type GitHubScalar struct {
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	ID          string `json:"id"`
-	Href        string `json:"href"`
-	Description string `json:"description"`
+	Name string `json:"name"`
 }
 
 // Internal Graph Representation
@@ -186,10 +228,11 @@ type Arg struct {
 
 func main() {
 	var (
-		schemaFile       = flag.String("schema", "", "Path to schema JSON (introspection or GitHub format)")
-		targetType       = flag.String("type", "", "Target type to find paths to (case-sensitive)")
-		maxDepth         = flag.Int("max-depth", 15, "Maximum search depth")
-		includeMutations = flag.Bool("mutations", false, "Include mutation paths as entry points")
+		schemaFile       = flag.String("schema", "", "Path to schema JSON file")
+		targetType       = flag.String("type", "", "Target type name to find paths to")
+		maxDepth         = flag.Int("max-depth", 15, "Maximum traversal depth")
+		limit            = flag.Int("limit", 0, "Stop after finding N paths (0 for no limit)")
+		includeMutations = flag.Bool("mutations", false, "Include Mutation fields as entry points")
 		verbose          = flag.Bool("v", false, "Verbose output")
 		noColor          = flag.Bool("no-color", false, "Disable colored output")
 	)
@@ -204,50 +247,44 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Read schema
 	data, err := os.ReadFile(*schemaFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Printf("Error reading schema file: %v\n", err)
 		os.Exit(1)
 	}
 
-	if *verbose {
-		fmt.Printf("Loading schema from %s...\n", color.CyanString(*schemaFile))
-	}
-
-	// Parse schema (auto-detect format)
 	graph, format, err := parseSchema(data, *includeMutations)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Parse Error: %v\n", err)
+		fmt.Printf("Parse Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	if *verbose {
-		fmt.Printf("Detected format: %s\n", color.CyanString(format))
-		fmt.Printf("Loaded %d types\n", len(graph.Nodes))
-		fmt.Printf("Entry points: %s\n\n", color.CyanString(strings.Join(graph.Roots, ", ")))
+		fmt.Printf("Loaded schema using %s format\n", color.CyanString(format))
 	}
 
-	// Validate target exists
-	if _, exists := graph.Nodes[*targetType]; !exists {
-		fmt.Fprintf(os.Stderr, "Error: Type '%s' not found in schema\n", *targetType)
-		available := findSimilarTypes(graph, *targetType)
-		if len(available) > 0 {
-			fmt.Fprintf(os.Stderr, "Did you mean: %s?\n", strings.Join(available, ", "))
+	targetNode, exists := graph.Nodes[*targetType]
+	if !exists {
+		fmt.Printf("Error: Target type '%s' not found in schema.\n", color.RedString(*targetType))
+		suggestions := findSimilarTypes(graph, *targetType)
+		if len(suggestions) > 0 {
+			fmt.Printf("Did you mean: %s?\n", strings.Join(suggestions, ", "))
 		}
 		os.Exit(1)
 	}
 
-	// Find paths
-	paths := findPaths(graph, *targetType, *maxDepth)
+	fmt.Printf("Target: %s (%s)\n", color.GreenString(*targetType), targetNode.Kind)
+	fmt.Printf("Entry points: %s\n", strings.Join(graph.Roots, ", "))
+	fmt.Printf("Max depth: %d\n", *maxDepth)
+	if *limit > 0 {
+		fmt.Printf("Limit: %d paths\n", *limit)
+	}
+	fmt.Println()
 
-	typeNode := graph.Nodes[*targetType]
-	fmt.Printf("Target: %s (%s)\n", color.CyanString(*targetType), color.YellowString(typeNode.Kind))
-	fmt.Printf("Entry points: %s\n", color.CyanString(strings.Join(graph.Roots, ", ")))
-	fmt.Printf("Max depth: %d\n\n", *maxDepth)
+	paths := findPaths(graph, *targetType, *maxDepth, *limit)
 
 	if len(paths) == 0 {
-		fmt.Printf("Warning: No paths found to %s within depth limit (%d)\n", *targetType, *maxDepth)
+		fmt.Printf("No paths found to type '%s' with max depth %d.\n", *targetType, *maxDepth)
 		os.Exit(2)
 	} else {
 		fmt.Printf("Found %s paths:\n\n", color.GreenString(fmt.Sprintf("%d", len(paths))))
@@ -260,24 +297,10 @@ func main() {
 func printUsage() {
 	fmt.Println("GraphQL Path Enumeration Tool (Go Edition)")
 	fmt.Println()
-	fmt.Println("Enumerates all GraphQL paths from root queries/mutations to a target type.")
-	fmt.Println("Supports standard introspection JSON and GitHub's custom schema format.")
-	fmt.Println()
-	fmt.Println("Usage:")
-	fmt.Println("  graphql-enum -schema <file.json> -type <TypeName> [options]")
+	fmt.Println("Usage: graphql-enum -schema <file.json> -type <TypeName> [options]")
 	fmt.Println()
 	fmt.Println("Options:")
-	fmt.Println("  -schema string     Path to schema JSON file (required)")
-	fmt.Println("  -type string       Target type name to find paths to (required)")
-	fmt.Println("  -max-depth int     Maximum traversal depth (default: 15)")
-	fmt.Println("  -mutations         Include Mutation fields as entry points")
-	fmt.Println("  -v                 Verbose output")
-	fmt.Println("  -no-color          Disable colored output")
-	fmt.Println()
-	fmt.Println("Examples:")
-	fmt.Println("  graphql-enum -schema schema.json -type User")
-	fmt.Println("  graphql-enum -schema github-schema.json -type Repository -mutations")
-	fmt.Println("  graphql-enum -schema schema.json -type Issue -max-depth 20 -v")
+	flag.PrintDefaults()
 }
 
 func findSimilarTypes(graph *Graph, target string) []string {
@@ -295,282 +318,143 @@ func findSimilarTypes(graph *Graph, target string) []string {
 }
 
 func parseSchema(data []byte, includeMutations bool) (*Graph, string, error) {
-	// Try introspection format
 	var intro IntrospectionFormat
 	if err := json.Unmarshal(data, &intro); err == nil && intro.Data.Schema.Types != nil {
 		graph := buildFromIntrospection(&intro, includeMutations)
 		return graph, "GraphQL Introspection", nil
 	}
 
-	// Try GitHub format
 	var gh GitHubFormat
 	if err := json.Unmarshal(data, &gh); err == nil {
-		if len(gh.Queries) > 0 || len(gh.Objects) > 0 || len(gh.Mutations) > 0 {
+		if len(gh.Queries) > 0 || len(gh.Objects) > 0 {
 			graph := buildFromGitHubFormat(&gh, includeMutations)
 			return graph, "GitHub Schema Format", nil
 		}
+	} else {
+		// fmt.Printf("DEBUG: GitHub Unmarshal Error: %v\n", err)
 	}
 
-	return nil, "", fmt.Errorf("unknown schema format (expected introspection or GitHub format)")
+	return nil, "", fmt.Errorf("unknown schema format")
 }
 
 func buildFromIntrospection(schema *IntrospectionFormat, includeMutations bool) *Graph {
-	graph := &Graph{
-		Nodes: make(map[string]*Node),
-		Roots: []string{},
-	}
-
-	// Index types
+	graph := &Graph{Nodes: make(map[string]*Node), Roots: []string{}}
 	for _, t := range schema.Data.Schema.Types {
 		if strings.HasPrefix(t.Name, "__") {
 			continue
 		}
-
-		node := &Node{
-			Name:          t.Name,
-			Kind:          t.Kind,
-			Fields:        []Edge{},
-			Implements:    []string{},
-			PossibleTypes: []string{},
-		}
-
+		node := &Node{Name: t.Name, Kind: t.Kind, Fields: []Edge{}}
 		for _, f := range t.Fields {
 			targetType := unwrapType(f.Type)
 			if targetType == "" {
 				continue
 			}
-
-			edge := Edge{
-				Name:   f.Name,
-				Target: targetType,
-			}
-
+			edge := Edge{Name: f.Name, Target: targetType}
 			for _, a := range f.Args {
-				edge.Arguments = append(edge.Arguments, Arg{
-					Name: a.Name,
-					Type: unwrapType(a.Type),
-				})
+				edge.Arguments = append(edge.Arguments, Arg{Name: a.Name, Type: unwrapType(a.Type)})
 			}
-
 			node.Fields = append(node.Fields, edge)
 		}
-
 		for _, i := range t.Interfaces {
 			node.Implements = append(node.Implements, i.Name)
 		}
-
 		for _, pt := range t.PossibleTypes {
 			node.PossibleTypes = append(node.PossibleTypes, pt.Name)
 		}
-
 		graph.Nodes[t.Name] = node
 	}
-
 	if schema.Data.Schema.QueryType != nil {
 		graph.Roots = append(graph.Roots, schema.Data.Schema.QueryType.Name)
 	}
 	if includeMutations && schema.Data.Schema.MutationType != nil {
 		graph.Roots = append(graph.Roots, schema.Data.Schema.MutationType.Name)
 	}
-	if schema.Data.Schema.SubscriptionType != nil {
-		graph.Roots = append(graph.Roots, schema.Data.Schema.SubscriptionType.Name)
-	}
-
 	return graph
 }
 
 func buildFromGitHubFormat(schema *GitHubFormat, includeMutations bool) *Graph {
-	graph := &Graph{
-		Nodes: make(map[string]*Node),
-		Roots: []string{},
-	}
-
-	// Process regular types (Objects)
+	graph := &Graph{Nodes: make(map[string]*Node), Roots: []string{}}
 	for _, obj := range schema.Objects {
-		node := convertGitHubObject(obj)
-		graph.Nodes[obj.Name] = node
+		graph.Nodes[obj.Name] = convertGitHubTypeDef(obj, "OBJECT")
 	}
-
-	// Process Interfaces
 	for _, iface := range schema.Interfaces {
-		node := convertGitHubInterface(iface)
-		graph.Nodes[iface.Name] = node
+		graph.Nodes[iface.Name] = convertGitHubTypeDef(iface, "INTERFACE")
 	}
-
-	// Process Unions
 	for _, union := range schema.Unions {
-		node := &Node{
-			Name:          union.Name,
-			Kind:          "UNION",
-			PossibleTypes: union.PossibleTypes,
-			Fields:        []Edge{},
-		}
-		graph.Nodes[union.Name] = node
+		graph.Nodes[union.Name] = &Node{Name: union.Name, Kind: "UNION", PossibleTypes: union.PossibleTypes}
 	}
-
-	// Process Enums and Scalars (leaf types)
 	for _, enum := range schema.Enums {
 		graph.Nodes[enum.Name] = &Node{Name: enum.Name, Kind: "ENUM"}
 	}
 	for _, scalar := range schema.Scalars {
 		graph.Nodes[scalar.Name] = &Node{Name: scalar.Name, Kind: "SCALAR"}
 	}
-
-	// Build Query root from queries array
-	if len(schema.Queries) > 0 {
-		queryNode := &Node{
-			Name:   "Query",
-			Kind:   "OBJECT",
-			Fields: []Edge{},
+	for _, node := range graph.Nodes {
+		for _, ifaceName := range node.Implements {
+			if ifaceNode, exists := graph.Nodes[ifaceName]; exists {
+				ifaceNode.PossibleTypes = append(ifaceNode.PossibleTypes, node.Name)
+			}
 		}
-		for _, q := range schema.Queries {
-			edge := convertGitHubTopLevelField(q)
-			queryNode.Fields = append(queryNode.Fields, edge)
-		}
-		graph.Nodes["Query"] = queryNode
-		graph.Roots = append(graph.Roots, "Query")
 	}
-
-	// Build Mutation root from mutations array
+	queryNode := &Node{Name: "Query", Kind: "OBJECT", Fields: []Edge{}}
+	for _, q := range schema.Queries {
+		queryNode.Fields = append(queryNode.Fields, convertGitHubFieldDef(q))
+	}
+	graph.Nodes["Query"] = queryNode
+	graph.Roots = append(graph.Roots, "Query")
 	if includeMutations && len(schema.Mutations) > 0 {
-		mutationNode := &Node{
-			Name:   "Mutation",
-			Kind:   "OBJECT",
-			Fields: []Edge{},
-		}
+		mutNode := &Node{Name: "Mutation", Kind: "OBJECT", Fields: []Edge{}}
 		for _, m := range schema.Mutations {
-			// For mutations, determine return type from returnFields
-			edge := convertGitHubMutation(m)
-			mutationNode.Fields = append(mutationNode.Fields, edge)
+			mutNode.Fields = append(mutNode.Fields, convertGitHubMutation(m))
 		}
-		graph.Nodes["Mutation"] = mutationNode
+		graph.Nodes["Mutation"] = mutNode
 		graph.Roots = append(graph.Roots, "Mutation")
 	}
-
 	return graph
 }
 
-func convertGitHubObject(obj GitHubTypeDef) *Node {
-	node := &Node{
-		Name:       obj.Name,
-		Kind:       "OBJECT",
-		Fields:     []Edge{},
-		Implements: []string{},
+func convertGitHubTypeDef(obj GitHubTypeDef, kind string) *Node {
+	node := &Node{Name: obj.Name, Kind: kind, Fields: []Edge{}, Implements: []string{}}
+	for _, impl := range obj.Implements {
+		node.Implements = append(node.Implements, string(impl.Name))
 	}
-
 	for _, f := range obj.Fields {
-		edge := Edge{
-			Name:   f.Name,
-			Target: cleanTypeName(f.Type),
-			Arguments: []Arg{},
-		}
-		for _, a := range f.Arguments {
-			edge.Arguments = append(edge.Arguments, Arg{
-				Name: a.Name,
-				Type: cleanTypeName(a.Type),
-			})
+		edge := Edge{Name: f.Name, Target: cleanTypeName(string(f.Type))}
+		for _, arg := range f.Arguments {
+			edge.Arguments = append(edge.Arguments, Arg{Name: arg.Name, Type: cleanTypeName(string(arg.Type))})
 		}
 		node.Fields = append(node.Fields, edge)
 	}
-
-	for _, i := range obj.Implements {
-		node.Implements = append(node.Implements, i.Name)
-	}
-
 	return node
 }
 
-func convertGitHubInterface(iface GitHubTypeDef) *Node {
-	node := &Node{
-		Name:   iface.Name,
-		Kind:   "INTERFACE",
-		Fields: []Edge{},
-	}
-
-	for _, f := range iface.Fields {
-		edge := Edge{
-			Name:      f.Name,
-			Target:    cleanTypeName(f.Type),
-			Arguments: []Arg{},
-		}
-		for _, a := range f.Arguments {
-			edge.Arguments = append(edge.Arguments, Arg{
-				Name: a.Name,
-				Type: cleanTypeName(a.Type),
-			})
-		}
-		node.Fields = append(node.Fields, edge)
-	}
-
-	return node
-}
-
-func convertGitHubTopLevelField(f GitHubFieldDef) Edge {
-	target := cleanTypeName(f.Type)
-	edge := Edge{
-		Name:      f.Name,
-		Target:    target,
-		Arguments: []Arg{},
-	}
-	for _, a := range f.Args {
-		edge.Arguments = append(edge.Arguments, Arg{
-			Name: a.Name,
-			Type: cleanTypeName(a.Type),
-		})
+func convertGitHubFieldDef(f GitHubFieldDef) Edge {
+	edge := Edge{Name: f.Name, Target: cleanTypeName(string(f.Type))}
+	for _, arg := range f.Args {
+		edge.Arguments = append(edge.Arguments, Arg{Name: arg.Name, Type: cleanTypeName(string(arg.Type))})
 	}
 	return edge
 }
 
 func convertGitHubMutation(m GitHubFieldDef) Edge {
-	// Determine the primary return type from returnFields
-	// Usually the first non-scalar return field is the main payload
-	var targetType string
-	for _, rf := range m.ReturnFields {
-		if !isScalarType(rf.Kind) {
-			targetType = rf.Type
-			break
+	targetType := string(m.Type)
+	if len(m.ReturnFields) > 0 {
+		for _, rf := range m.ReturnFields {
+			if strings.Contains(strings.ToLower(rf.Name), strings.ToLower(m.Name)) ||
+					(rf.Kind == "objects" && !strings.HasSuffix(rf.Name, "Edge") && !strings.Contains(rf.Name, "Connection")) {
+				targetType = string(rf.Type)
+				break
+			}
 		}
 	}
-	if targetType == "" && len(m.ReturnFields) > 0 {
-		targetType = m.ReturnFields[0].Type
-	}
-	targetType = cleanTypeName(targetType)
-	if targetType == "" {
-		targetType = cleanTypeName(m.Type)
-	}
-
-	edge := Edge{
-		Name:      m.Name,
-		Target:    targetType,
-		Arguments: []Arg{},
-	}
-
-	// Use inputFields as arguments for mutations
+	edge := Edge{Name: m.Name, Target: cleanTypeName(targetType)}
 	for _, inputField := range m.InputFields {
-		// Skip the "input" wrapper argument if present
-		if inputField.Name == "input" && inputField.Type != "" {
-			// The actual arguments are fields of the input type
-			// For simplicity, we just note this is an input object
-			edge.Arguments = append(edge.Arguments, Arg{
-				Name: "input",
-				Type: cleanTypeName(inputField.Type),
-			})
-		} else {
-			edge.Arguments = append(edge.Arguments, Arg{
-				Name: inputField.Name,
-				Type: cleanTypeName(inputField.Type),
-			})
-		}
+		edge.Arguments = append(edge.Arguments, Arg{Name: inputField.Name, Type: cleanTypeName(string(inputField.Type))})
 	}
-
 	return edge
 }
 
 func cleanTypeName(t string) string {
-	if t == "" {
-		return ""
-	}
-	// Remove GraphQL type wrappers: [Type!]! -> Type
 	t = strings.ReplaceAll(t, "!", "")
 	t = strings.ReplaceAll(t, "[", "")
 	t = strings.ReplaceAll(t, "]", "")
@@ -587,126 +471,92 @@ func unwrapType(t TypeRef) string {
 	return ""
 }
 
-func isScalarType(kind string) bool {
-	return kind == "scalars" || kind == "SCALAR" || kind == "enums" || kind == "ENUM"
+func isScalar(graph *Graph, name string) bool {
+	if s := map[string]bool{"String": true, "Int": true, "Float": true, "Boolean": true, "ID": true}[name]; s {
+		return true
+	}
+	if node, exists := graph.Nodes[name]; exists {
+		return node.Kind == "SCALAR" || node.Kind == "ENUM"
+	}
+	return false
 }
 
-func findPaths(graph *Graph, target string, maxDepth int) [][]string {
+func findPaths(graph *Graph, target string, maxDepth, limit int) [][]string {
 	var results [][]string
-
 	for _, root := range graph.Roots {
 		visited := make(map[string]bool)
-		var current []string
-		dfs(graph, root, target, current, visited, &results, 0, maxDepth)
+		dfs(graph, root, target, []string{root}, visited, &results, 0, maxDepth, limit)
+		if limit > 0 && len(results) >= limit {
+			break
+		}
 	}
-
 	return results
 }
 
-func dfs(graph *Graph, current, target string, path []string, visited map[string]bool, results *[][]string, depth, maxDepth int) {
-	if depth > maxDepth {
+func dfs(graph *Graph, current, target string, path []string, visited map[string]bool, results *[][]string, depth, maxDepth, limit int) {
+	if depth > maxDepth || (limit > 0 && len(*results) >= limit) || visited[current] {
 		return
 	}
-
-	if visited[current] {
-		return
-	}
-
 	node, exists := graph.Nodes[current]
 	if !exists {
 		return
 	}
-
-	newPath := append(path, current)
 	visited[current] = true
+	defer func() { visited[current] = false }()
 
-	// Found target (but path must be longer than just the root itself)
-	if current == target && len(newPath) > 1 {
-		pathCopy := make([]string, len(newPath))
-		copy(pathCopy, newPath)
-		*results = append(*results, pathCopy)
-		visited[current] = false
-		return
-	}
-
-	// Explore fields
 	for _, field := range node.Fields {
-		fieldType := field.Target
-
-		// Skip scalar types unless they're the target
-		if isScalar(fieldType) && fieldType != target {
+		if isScalar(graph, field.Target) && field.Target != target {
 			continue
 		}
-
 		fieldStep := field.Name
 		if len(field.Arguments) > 0 {
-			args := formatArguments(field.Arguments)
-			fieldStep = fmt.Sprintf("%s(%s)", field.Name, args)
+			var args []string
+			for _, a := range field.Arguments {
+				args = append(args, fmt.Sprintf("%s: %s", a.Name, a.Type))
+			}
+			fieldStep = fmt.Sprintf("%s(%s)", field.Name, strings.Join(args, ", "))
 		}
-
-		pathWithField := append(newPath, fieldStep)
-
-		if fieldType == target {
-			pathCopy := make([]string, len(pathWithField))
-			copy(pathCopy, pathWithField)
-			*results = append(*results, pathCopy)
+		newPath := append([]string{}, path...)
+		newPath = append(newPath, fieldStep)
+		if field.Target == target {
+			if limit > 0 && len(*results) >= limit {
+				return
+			}
+			*results = append(*results, append(newPath, target))
+			if limit > 0 && len(*results) >= limit {
+				return
+			}
 		} else {
-			dfs(graph, fieldType, target, pathWithField, visited, results, depth+1, maxDepth)
+			dfs(graph, field.Target, target, newPath, visited, results, depth+1, maxDepth, limit)
 		}
 	}
-
-	// Explore possible types (interfaces/unions)
 	for _, subType := range node.PossibleTypes {
+		newPath := append([]string{}, path...)
+		newPath = append(newPath, subType)
 		if subType == target {
-			pathCopy := make([]string, len(newPath))
-			copy(pathCopy, newPath)
-			*results = append(*results, append(pathCopy, subType))
+			if limit > 0 && len(*results) >= limit {
+				return
+			}
+			*results = append(*results, newPath)
+			if limit > 0 && len(*results) >= limit {
+				return
+			}
 		} else {
-			dfs(graph, subType, target, newPath, visited, results, depth+1, maxDepth)
+			dfs(graph, subType, target, newPath, visited, results, depth, maxDepth, limit)
 		}
 	}
-
-	visited[current] = false
-}
-
-var scalarTypes = map[string]bool{
-	"String": true, "Int": true, "Float": true, "Boolean": true, "ID": true,
-	"DateTime": true, "Date": true, "URI": true, "HTML": true,
-	"X509Certificate": true, "GitObjectID": true, "GitSSHRemote": true,
-	"GitTimestamp": true, "PreciseDateTime": true, "Base64String": true,
-}
-
-func isScalar(name string) bool {
-	return scalarTypes[name]
-}
-
-func formatArguments(args []Arg) string {
-	if len(args) == 0 {
-		return ""
-	}
-	parts := make([]string, len(args))
-	for i, a := range args {
-		parts[i] = fmt.Sprintf("%s: %s", a.Name, a.Type)
-	}
-	return strings.Join(parts, ", ")
 }
 
 func formatPath(path []string) string {
-	if len(path) == 0 {
-		return ""
-	}
-
-	var formatted []string
-	for i, step := range path {
+	var f []string
+	for i, s := range path {
 		if i == 0 {
-			formatted = append(formatted, color.CyanString(step))
+			f = append(f, color.CyanString(s))
 		} else if i == len(path)-1 {
-			formatted = append(formatted, color.GreenString(step))
+			f = append(f, color.GreenString(s))
 		} else {
-			formatted = append(formatted, step)
+			f = append(f, s)
 		}
 	}
-
-	return strings.Join(formatted, " → ")
+	return strings.Join(f, " → ")
 }
-
