@@ -33,6 +33,14 @@ go build -o graphql-enum
 mv graphql-enum $GOPATH/bin/  # Or any directory in your PATH
 ```
 
+### Local Development
+
+If you're developing locally, you can run the application directly:
+
+```bash
+go run main.go -schema schema.json -type TargetType
+```
+
 ## Usage
 
 ```bash
@@ -47,6 +55,12 @@ graphql-enum -schema schema.json -type User
 - `-mutations`: Include Mutation fields as entry points (default: false)
 - `-v`: Verbose output showing schema loading details
 - `-no-color`: Disable colored output
+- `-i`: Interactive TUI mode
+- `-generate`: Generate executable GraphQL queries
+- `-output string`: Output directory for generated queries (default: "./queries")
+- `-endpoint string`: GraphQL endpoint for curl generation
+- `-parallel int`: Number of parallel workers (0=sequential, default: 0)
+- `-json string`: Export results to JSON file
 
 ### Examples
 
@@ -65,6 +79,21 @@ graphql-enum -schema schema.json -type User -v
 
 # Disable colors (useful for piping to other tools)
 graphql-enum -schema schema.json -type Issue -no-color
+
+# Interactive TUI mode
+graphql-enum -schema schema.json -type User -i
+
+# Generate executable GraphQL queries
+graphql-enum -schema schema.json -type User -generate
+
+# Generate queries with curl commands for a specific endpoint
+graphql-enum -schema schema.json -type User -generate -endpoint https://api.example.com/graphql
+
+# Use parallel processing for faster enumeration
+graphql-enum -schema schema.json -type User -parallel 8
+
+# Export results to JSON
+graphql-enum -schema schema.json -type User -json results.json
 ```
 
 ## Schema Formats
@@ -141,6 +170,35 @@ Found 8 paths:
   8. Query → nodes(ids: [ID!]!) → Repository
 ```
 
+## Testing
+
+The application comes with test data in the `test_data/` directory. You can test the application with these sample schemas:
+
+```bash
+# Test with the simple test schema
+go run main.go -schema test_data/test.json -type Bar
+
+# Test with the Star Wars schema (demo.json)
+go run main.go -schema test_data/demo.json -type Film
+
+# Test with verbose output to see more details
+go run main.go -schema test_data/test.json -type Foo -v
+
+# Test the interactive TUI mode
+go run main.go -schema test_data/test.json -type Bar -i
+```
+
+To run the application in development mode, make sure you have Go 1.21+ installed and run:
+
+```bash
+# Build and run directly
+go run main.go -h
+
+# Or build the binary
+go build -o graphql-enum
+./graphql-enum -schema test_data/test.json -type Bar
+```
+
 ## Security Use Case
 
 GraphQL APIs can expose the same data through multiple paths. Developers may implement authorization checks inconsistently:
@@ -179,6 +237,34 @@ This is a Go rewrite of [graphql-path-enum](https://gitlab.com/dee-see/graphql-p
 ## Dependencies
 
 - [fatih/color](https://github.com/fatih/color) - Terminal colors
+- [charmbracelet/bubbletea](https://github.com/charmbracelet/bubbletea) - TUI framework
+- [charmbracelet/bubbles](https://github.com/charmbracelet/bubbles) - TUI components
+- [charmbracelet/lipgloss](https://github.com/charmbracelet/lipgloss) - Styled TUIs
+- [atotto/clipboard](https://github.com/atotto/clipboard) - Clipboard access
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Schema format not recognized**: Make sure your schema follows either the standard GraphQL introspection format or GitHub's custom schema format. The tool automatically detects the format, but if you're having issues, verify your schema structure.
+
+2. **Type not found**: Check that the target type name is spelled exactly as it appears in the schema (case-sensitive). The tool will suggest similar type names if you mistype.
+
+3. **Build errors**: If you encounter build errors, ensure you have Go 1.21+ installed and that all dependencies are properly downloaded:
+   ```bash
+   go mod tidy
+   go build
+   ```
+
+4. **Memory issues with large schemas**: For very large schemas, consider using a lower max depth or running with parallel processing enabled:
+   ```bash
+   graphql-enum -schema large-schema.json -type Target -max-depth 10 -parallel 4
+   ```
+
+5. **No paths found**: If no paths are found to your target type, it may be unreachable from Query/Mutation entry points, or you may need to increase the max depth:
+   ```bash
+   graphql-enum -schema schema.json -type Target -max-depth 25
+   ```
 
 ## License
 

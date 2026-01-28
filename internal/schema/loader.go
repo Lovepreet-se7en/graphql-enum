@@ -1,0 +1,354 @@
+package schema
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+)
+
+func Load(filename string) (*Schema, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	// Try standard introspection format first
+	var standard struct {
+		Data struct {
+			Schema struct {
+				QueryType    struct{ Name string `json:"name"` } `json:"queryType"`
+				MutationType struct{ Name string `json:"name"` } `json:"mutationType"`
+				Types        []struct {
+					Name   string `json:"name"`
+					Kind   string `json:"kind"`
+					Fields []struct {
+						Name string `json:"name"`
+						Type struct {
+							Name   string `json:"name"`
+							Kind   string `json:"kind"`
+							OfType *struct {
+								Name string `json:"name"`
+								Kind string `json:"kind"`
+							} `json:"ofType"`
+						} `json:"type"`
+						Args []struct {
+							Name string `json:"name"`
+							Type struct {
+								Name   string `json:"name"`
+								Kind   string `json:"kind"`
+								OfType *struct {
+									Name string `json:"name"`
+								} `json:"ofType"`
+							} `json:"type"`
+						} `json:"args"`
+					} `json:"fields"`
+				} `json:"types"`
+			} `json:"__schema"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(data, &standard); err == nil && standard.Data.Schema.QueryType.Name != "" {
+		return parseStandardFormat(standard)
+	}
+
+	// Try GitHub custom format
+	var github struct {
+		Queries []struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+			Args []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			} `json:"args"`
+		} `json:"queries"`
+		Mutations []struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+			Args []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			} `json:"args"`
+		} `json:"mutations"`
+		Objects []struct {
+			Name   string `json:"name"`
+			Fields []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			} `json:"fields"`
+		} `json:"objects"`
+	}
+
+	if err := json.Unmarshal(data, &github); err != nil {
+		return nil, fmt.Errorf("unknown schema format: %v", err)
+	}
+
+	// Convert to the expected format for the function
+	githubParsed := struct {
+		Queries   []struct{ Name, Type string; Args []struct{ Name, Type string } }
+		Mutations []struct{ Name, Type string; Args []struct{ Name, Type string } }
+		Objects   []struct{ Name string; Fields []struct{ Name, Type string } }
+	}{
+		Queries:   make([]struct{ Name, Type string; Args []struct{ Name, Type string } }, len(github.Queries)),
+		Mutations: make([]struct{ Name, Type string; Args []struct{ Name, Type string } }, len(github.Mutations)),
+		Objects:   make([]struct{ Name string; Fields []struct{ Name, Type string } }, len(github.Objects)),
+	}
+
+	for i, q := range github.Queries {
+		args := make([]struct{ Name, Type string }, len(q.Args))
+		for j, arg := range q.Args {
+			args[j] = struct{ Name, Type string }{arg.Name, arg.Type}
+		}
+		githubParsed.Queries[i] = struct{ Name, Type string; Args []struct{ Name, Type string } }{q.Name, q.Type, args}
+	}
+
+	for i, m := range github.Mutations {
+		args := make([]struct{ Name, Type string }, len(m.Args))
+		for j, arg := range m.Args {
+			args[j] = struct{ Name, Type string }{arg.Name, arg.Type}
+		}
+		githubParsed.Mutations[i] = struct{ Name, Type string; Args []struct{ Name, Type string } }{m.Name, m.Type, args}
+	}
+
+	for i, obj := range github.Objects {
+		fields := make([]struct{ Name, Type string }, len(obj.Fields))
+		for j, field := range obj.Fields {
+			fields[j] = struct{ Name, Type string }{field.Name, field.Type}
+		}
+		githubParsed.Objects[i] = struct{ Name string; Fields []struct{ Name, Type string } }{obj.Name, fields}
+	}
+
+	return parseGitHubFormat(githubParsed)
+}
+
+func parseStandardFormat(s struct {
+	Data struct {
+		Schema struct {
+			QueryType    struct{ Name string `json:"name"` } `json:"queryType"`
+			MutationType struct{ Name string `json:"name"` } `json:"mutationType"`
+			Types        []struct {
+				Name   string `json:"name"`
+				Kind   string `json:"kind"`
+				Fields []struct {
+					Name string `json:"name"`
+					Type struct {
+						Name   string `json:"name"`
+						Kind   string `json:"kind"`
+						OfType *struct {
+							Name string `json:"name"`
+							Kind string `json:"kind"`
+						} `json:"ofType"`
+					} `json:"type"`
+					Args []struct {
+						Name string `json:"name"`
+						Type struct {
+							Name   string `json:"name"`
+							Kind   string `json:"kind"`
+							OfType *struct{ Name string `json:"name"` } `json:"ofType"`
+						} `json:"type"`
+					} `json:"args"`
+				} `json:"fields"`
+			} `json:"types"`
+		} `json:"__schema"`
+	} `json:"data"`
+}) (*Schema, error) {
+	
+	schema := &Schema{
+		Types:        make(map[string]*Type),
+		QueryType:    s.Data.Schema.QueryType.Name,
+		MutationType: s.Data.Schema.MutationType.Name,
+	}
+
+	for _, t := range s.Data.Schema.Types {
+		if t.Kind != "OBJECT" && t.Kind != "INTERFACE" {
+			continue
+		}
+
+		typ := &Type{
+			Name:   t.Name,
+			Kind:   t.Kind,
+			Fields: make([]Field, 0),
+		}
+
+		for _, f := range t.Fields {
+			fieldType := getTypeNameForField(f.Type)
+			if fieldType == "" {
+				continue
+			}
+
+			args := make([]Arg, len(f.Args))
+			for i, a := range f.Args {
+				args[i] = Arg{
+					Name:     a.Name,
+					Type:     getTypeNameForArg(a.Type),
+					Required: isRequiredForArg(a.Type),
+				}
+			}
+
+			typ.Fields = append(typ.Fields, Field{
+				Name: f.Name,
+				Type: fieldType,
+				Args: args,
+			})
+		}
+
+		schema.Types[t.Name] = typ
+	}
+
+	return schema, nil
+}
+
+func parseGitHubFormat(g struct {
+	Queries   []struct{ Name, Type string; Args []struct{ Name, Type string } }
+	Mutations []struct{ Name, Type string; Args []struct{ Name, Type string } }
+	Objects   []struct{ Name string; Fields []struct{ Name, Type string } }
+}) (*Schema, error) {
+
+	schema := &Schema{
+		Types:       make(map[string]*Type),
+		QueryType:   "Query",
+		MutationType: "Mutation",
+	}
+
+	// Add Query type
+	queryType := &Type{Name: "Query", Kind: "OBJECT", Fields: make([]Field, len(g.Queries))}
+	for i, q := range g.Queries {
+		args := make([]Arg, len(q.Args))
+		for j, a := range q.Args {
+			args[j] = Arg{Name: a.Name, Type: a.Type, Required: strings.Contains(a.Type, "!")}
+		}
+		queryType.Fields[i] = Field{Name: q.Name, Type: cleanType(q.Type), Args: args}
+	}
+	schema.Types["Query"] = queryType
+
+	// Add Mutation type if present
+	if len(g.Mutations) > 0 {
+		mutationType := &Type{Name: "Mutation", Kind: "OBJECT", Fields: make([]Field, len(g.Mutations))}
+		for i, m := range g.Mutations {
+			args := make([]Arg, len(m.Args))
+			for j, a := range m.Args {
+				args[j] = Arg{Name: a.Name, Type: a.Type, Required: strings.Contains(a.Type, "!")}
+			}
+			mutationType.Fields[i] = Field{Name: m.Name, Type: cleanType(m.Type), Args: args}
+		}
+		schema.Types["Mutation"] = mutationType
+	}
+
+	// Add object types
+	for _, obj := range g.Objects {
+		fields := make([]Field, len(obj.Fields))
+		for i, f := range obj.Fields {
+			fields[i] = Field{Name: f.Name, Type: cleanType(f.Type)}
+		}
+		schema.Types[obj.Name] = &Type{
+			Name:   obj.Name,
+			Kind:   "OBJECT",
+			Fields: fields,
+		}
+	}
+
+	return schema, nil
+}
+
+func getTypeNameForField(t interface{}) string {
+	switch v := t.(type) {
+	case struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		OfType *struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+		} `json:"ofType"`
+	}:
+		if v.Name != "" {
+			return v.Name
+		}
+		if v.OfType != nil {
+			if v.OfType.Name != "" {
+				return v.OfType.Name
+			}
+			return v.OfType.Kind
+		}
+		return ""
+	case struct {
+		Name   string
+		Kind   string
+		OfType *struct {
+			Name string
+			Kind string
+		}
+	}:
+		if v.Name != "" {
+			return v.Name
+		}
+		if v.OfType != nil {
+			if v.OfType.Name != "" {
+				return v.OfType.Name
+			}
+			return v.OfType.Kind
+		}
+		return ""
+	}
+	return ""
+}
+
+func getTypeNameForArg(t interface{}) string {
+	switch v := t.(type) {
+	case struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		OfType *struct{ Name string `json:"name"` } `json:"ofType"`
+	}:
+		if v.Name != "" {
+			return v.Name
+		}
+		if v.OfType != nil {
+			return v.OfType.Name
+		}
+		return ""
+	case struct {
+		Name   string
+		Kind   string
+		OfType *struct{ Name string }
+	}:
+		if v.Name != "" {
+			return v.Name
+		}
+		if v.OfType != nil {
+			return v.OfType.Name
+		}
+		return ""
+	}
+	return ""
+}
+
+func isRequiredForArg(t interface{}) bool {
+	switch v := t.(type) {
+	case struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		OfType *struct{ Name string `json:"name"` } `json:"ofType"`
+	}:
+		return v.Kind == "NON_NULL"
+	case struct {
+		Name   string
+		Kind   string
+		OfType *struct{ Name string }
+	}:
+		return v.Kind == "NON_NULL"
+	case struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		OfType *struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+		} `json:"ofType"`
+	}:
+		return v.Kind == "NON_NULL"
+	}
+	return false
+}
+
+func cleanType(t string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(t, "["), "]")
+}
