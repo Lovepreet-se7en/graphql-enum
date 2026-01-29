@@ -4,9 +4,10 @@ import "strings"
 
 // Arg represents a GraphQL argument
 type Arg struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Required bool   `json:"required"`
+	Name         string  `json:"name"`
+	Type         string  `json:"type"`
+	Required     bool    `json:"required"`
+	DefaultValue *string `json:"defaultValue"`
 }
 
 // Field represents a GraphQL field

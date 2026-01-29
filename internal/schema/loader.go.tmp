@@ -1,4 +1,4 @@
-package schema
+﻿package schema
 
 import (
 	"encoding/json"
@@ -16,6 +16,12 @@ const (
 	FormatGitHubCustom
 	FormatHasuraExtended
 )
+
+// SchemaParserStrategy defines the interface for parsing different schema formats
+type SchemaParserStrategy interface {
+	CanHandle(rawSchema map[string]interface{}) bool
+	Parse(rawSchema map[string]interface{}) (*Schema, error)
+}
 
 // FormatDetector detects the schema format
 type FormatDetector struct{}
@@ -86,40 +92,6 @@ func Load(filename string) (*Schema, error) {
 		return nil, err
 	}
 
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
-	}
-
-	detector := &FormatDetector{}
-	format := detector.Detect(raw)
-
-	switch format {
-	case FormatStandardIntrospection:
-		return parseStandardIntrospection(data)
-	case FormatGitHubCustom:
-		return parseGitHubCustom(data)
-	case FormatHasuraExtended:
-		return parseHasuraExtended(data)
-	default:
-		// Try standard introspection as fallback
-		if schema, err := parseStandardIntrospection(data); err == nil {
-			return schema, nil
-		}
-		// Try GitHub custom as fallback
-		if schema, err := parseGitHubCustom(data); err == nil {
-			return schema, nil
-		}
-		// Try Hasura as fallback
-		if schema, err := parseHasuraExtended(data); err == nil {
-			return schema, nil
-		}
-		return nil, fmt.Errorf("unknown schema format")
-	}
-}
-
-// parseStandardIntrospection parses standard GraphQL introspection format
-func parseStandardIntrospection(data []byte) (*Schema, error) {
 	// Try standard introspection format first
 	var standard struct {
 		Data struct {
@@ -155,19 +127,11 @@ func parseStandardIntrospection(data []byte) (*Schema, error) {
 		} `json:"data"`
 	}
 
-	if err := json.Unmarshal(data, &standard); err != nil {
-		return nil, fmt.Errorf("failed to parse standard introspection: %w", err)
+	if err := json.Unmarshal(data, &standard); err == nil && standard.Data.Schema.QueryType.Name != "" {
+		return parseStandardFormat(standard)
 	}
 
-	if standard.Data.Schema.QueryType.Name == "" {
-		return nil, fmt.Errorf("not a standard introspection schema")
-	}
-
-	return parseStandardFormat(standard)
-}
-
-// parseGitHubCustom parses GitHub custom schema format
-func parseGitHubCustom(data []byte) (*Schema, error) {
+	// Try GitHub custom format
 	var github struct {
 		Queries []struct {
 			Name string `json:"name"`
@@ -195,7 +159,7 @@ func parseGitHubCustom(data []byte) (*Schema, error) {
 	}
 
 	if err := json.Unmarshal(data, &github); err != nil {
-		return nil, fmt.Errorf("failed to parse GitHub custom format: %w", err)
+		return nil, fmt.Errorf("unknown schema format: %v", err)
 	}
 
 	// Convert to the expected format for the function
@@ -236,121 +200,6 @@ func parseGitHubCustom(data []byte) (*Schema, error) {
 	return parseGitHubFormat(githubParsed)
 }
 
-// parseHasuraExtended parses Hasura-specific GraphQL schema format
-func parseHasuraExtended(data []byte) (*Schema, error) {
-	// For Hasura schemas, we need to handle potential variations in argument structure
-	// First, try to parse as standard introspection but with more flexible argument handling
-	var standard struct {
-		Data struct {
-			Schema struct {
-				QueryType    struct{ Name string `json:"name"` } `json:"queryType"`
-				MutationType struct{ Name string `json:"name"` } `json:"mutationType"`
-				Types        []struct {
-					Name   string `json:"name"`
-					Kind   string `json:"kind"`
-					Fields []struct {
-						Name string `json:"name"`
-						Type struct {
-							Name   string `json:"name"`
-							Kind   string `json:"kind"`
-							OfType *struct {
-								Name string `json:"name"`
-								Kind string `json:"kind"`
-							} `json:"ofType"`
-						} `json:"type"`
-						Args []interface{} `json:"args"` // Use interface{} to handle different formats
-					} `json:"fields"`
-				} `json:"types"`
-			} `json:"__schema"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(data, &standard); err != nil {
-		return nil, fmt.Errorf("failed to parse Hasura schema: %w", err)
-	}
-
-	if standard.Data.Schema.QueryType.Name == "" {
-		return nil, fmt.Errorf("not a valid Hasura schema")
-	}
-
-	schema := &Schema{
-		Types:        make(map[string]*Type),
-		QueryType:    standard.Data.Schema.QueryType.Name,
-		MutationType: standard.Data.Schema.MutationType.Name,
-	}
-
-	for _, t := range standard.Data.Schema.Types {
-		if t.Kind != "OBJECT" && t.Kind != "INTERFACE" {
-			continue
-		}
-
-		typ := &Type{
-			Name:   t.Name,
-			Kind:   t.Kind,
-			Fields: make([]Field, 0),
-		}
-
-		for _, f := range t.Fields {
-			fieldType := getTypeNameForField(f.Type)
-			if fieldType == "" {
-				continue
-			}
-
-			// Handle arguments with flexible parsing
-			args := make([]Arg, 0)
-			for _, argInterface := range f.Args {
-				arg := parseArgument(argInterface)
-				if arg.Name != "" {
-					args = append(args, arg)
-				}
-			}
-
-			typ.Fields = append(typ.Fields, Field{
-				Name: f.Name,
-				Type: fieldType,
-				Args: args,
-			})
-		}
-
-		schema.Types[t.Name] = typ
-	}
-
-	return schema, nil
-}
-
-// parseArgument handles different argument formats that might appear in Hasura schemas
-func parseArgument(argInterface interface{}) Arg {
-	arg := Arg{}
-
-	switch v := argInterface.(type) {
-	case map[string]interface{}:
-		// Standard format: {name: "argName", type: {...}}
-		if name, ok := v["name"].(string); ok {
-			arg.Name = name
-		}
-		if typeVal, ok := v["type"]; ok {
-			arg.Type = getTypeNameForArg(typeVal)
-		}
-		if defaultValue, ok := v["defaultValue"]; ok {
-			if dv, ok := defaultValue.(string); ok {
-				arg.DefaultValue = &dv
-			}
-		}
-	case map[string]string:
-		// Simple string map format
-		if name, ok := v["name"]; ok {
-			arg.Name = name
-		}
-		if typ, ok := v["type"]; ok {
-			arg.Type = typ
-		}
-	}
-
-	return arg
-}
-
-// getTypeNameForField extracts the type name from a field type specification
-
 func parseStandardFormat(s struct {
 	Data struct {
 		Schema struct {
@@ -382,7 +231,7 @@ func parseStandardFormat(s struct {
 		} `json:"__schema"`
 	} `json:"data"`
 }) (*Schema, error) {
-
+	
 	schema := &Schema{
 		Types:        make(map[string]*Type),
 		QueryType:    s.Data.Schema.QueryType.Name,
@@ -518,24 +367,6 @@ func getTypeNameForField(t interface{}) string {
 			return v.OfType.Kind
 		}
 		return ""
-	case map[string]interface{}:
-		if name, ok := v["name"].(string); ok && name != "" {
-			return name
-		}
-		if ofType, exists := v["ofType"].(map[string]interface{}); exists {
-			if name, ok := ofType["name"].(string); ok && name != "" {
-				return name
-			}
-			if kind, ok := ofType["kind"].(string); ok {
-				return kind
-			}
-		}
-		if name, ok := v["name"]; ok {
-			if str, ok := name.(string); ok {
-				return str
-			}
-		}
-		return ""
 	}
 	return ""
 }
@@ -566,16 +397,6 @@ func getTypeNameForArg(t interface{}) string {
 			return v.OfType.Name
 		}
 		return ""
-	case map[string]interface{}:
-		if name, ok := v["name"].(string); ok && name != "" {
-			return name
-		}
-		if ofType, exists := v["ofType"].(map[string]interface{}); exists {
-			if name, ok := ofType["name"].(string); ok && name != "" {
-				return name
-			}
-		}
-		return ""
 	}
 	return ""
 }
@@ -594,37 +415,17 @@ func isRequiredForArg(t interface{}) bool {
 		OfType *struct{ Name string }
 	}:
 		return v.Kind == "NON_NULL"
-	case map[string]interface{}:
-		if kind, ok := v["kind"].(string); ok {
-			return kind == "NON_NULL"
-		}
-		return false
+	case struct {
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		OfType *struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+		} `json:"ofType"`
+	}:
+		return v.Kind == "NON_NULL"
 	}
 	return false
-}
-
-// getTypeNameForArgFromStandardFormat handles the original standard format
-func getTypeNameForArgFromStandardFormat(t struct {
-	Name   string `json:"name"`
-	Kind   string `json:"kind"`
-	OfType *struct{ Name string `json:"name"` } `json:"ofType"`
-}) string {
-	if t.Name != "" {
-		return t.Name
-	}
-	if t.OfType != nil {
-		return t.OfType.Name
-	}
-	return ""
-}
-
-// isRequiredForArgFromStandardFormat handles the original standard format
-func isRequiredForArgFromStandardFormat(t struct {
-	Name   string `json:"name"`
-	Kind   string `json:"kind"`
-	OfType *struct{ Name string `json:"name"` } `json:"ofType"`
-}) bool {
-	return t.Kind == "NON_NULL"
 }
 
 func cleanType(t string) string {
